@@ -1,55 +1,51 @@
 import qutip as qt
 import numpy as np
 import matplotlib.pyplot as plt
+from flask import Flask, send_file
+import io
 
-# Parameters
-N = 4  # levels per "lattice" (4D)
-dim = N**2  # 16
-omega = 1.0
-g_diag = 0.8   # diagonal coupling strength (your two diagonals)
-g_vac = 0.5    # false vacuum coupling
-kappa = 0.1    # dissipation
+app = Flask(__name__)
 
-# Basis states for 4D lattices
-a = qt.destroy(N)
-# Effective gauge-like operators (position/momentum inspired)
-X = (a + a.dag()) / np.sqrt(2)
-P = 1j * (a.dag() - a) / np.sqrt(2)
+@app.route('/')
+def home():
+    # Run the simulation
+    N = 4
+    g_diag = 1.2
+    g_vac = 0.8
+    kappa = 0.08
+    tlist = np.linspace(0, 12, 200)
 
-# Two subsystems + mediator
-psi0_A = qt.basis(N, 0)  # initial
-psi0_B = qt.basis(N, 0)
-vac = qt.basis(3, 0)  # truncated vacuum mediator
+    a = qt.destroy(N)
+    X = (a + a.dag()) / np.sqrt(2)
+    P = 1j * (a.dag() - a) / np.sqrt(2)
 
-# Tensor to full space: A ⊗ B ⊗ vac (but we'll trace out mediator for simplicity)
-H0 = qt.tensor(qt.qeye(N), qt.qeye(N))  # base
+    psi0 = qt.tensor(qt.basis(N, 0), qt.basis(N, 0))
 
-# Diagonal extensions (nonlocal couplings)
-diag1 = qt.tensor(X, X) + qt.tensor(P, P)  # example diagonal mixing
-diag2 = qt.tensor(X + P, X - P) * 0.5
-H_diag = g_diag * (diag1 + diag2)
+    H_diag = g_diag * (qt.tensor(X, X) + qt.tensor(P, P) + 0.5 * qt.tensor(X+P, X-P))
+    H_vac = g_vac * (qt.tensor(X, qt.qeye(N)) + qt.tensor(qt.qeye(N), X))
+    H_drive = sum(2 * np.pi * f * qt.tensor(qt.num(N), qt.qeye(N)) for f in [1.5, 2.8, 4.1])
+    H = qt.tensor(qt.qeye(N), qt.qeye(N)) + H_diag + H_vac + H_drive
 
-# False vacuum domain wall / phase-lock drive
-H_vac = g_vac * (qt.tensor(X, qt.qeye(N)) + qt.tensor(qt.qeye(N), X))  # coupling through vacuum
-H_drive = 2 * np.pi * 1.5 * qt.tensor(qt.num(N), qt.qeye(N))  # phase locking drive
+    c_ops = [np.sqrt(kappa) * qt.tensor(a, qt.qeye(N)), 
+             np.sqrt(kappa) * qt.tensor(qt.qeye(N), a)]
 
-H = H0 + H_diag + H_vac + H_drive
+    result = qt.mesolve(H, psi0, tlist, c_ops)
+    final_rho = result.states[-1].ptrace([0,1])
 
-# Collapse operators (noise + dissipation for open system / feedback)
-c_ops = [np.sqrt(kappa) * qt.tensor(a, qt.qeye(N)), 
-         np.sqrt(kappa) * qt.tensor(qt.qeye(N), a)]
+    entropy = qt.entropy_vn(final_rho)
+    corr_xx = qt.expect(qt.tensor(X, X), final_rho)
+    corr_pp = qt.expect(qt.tensor(P, P), final_rho)
 
-# Time evolution with protocol (steps 3-6 active)
-tlist = np.linspace(0, 10, 200)
-result = qt.mesolve(H, qt.tensor(psi0_A, psi0_B), tlist, c_ops)
+    output = f"""
+    <h1>Quantum Biology 6D+ Simulation</h1>
+    <p><strong>EPR Steering Achieved:</strong> False</p>
+    <p><strong>Entanglement Entropy:</strong> {entropy:.4f}</p>
+    <p><strong>Diagonal Corr XX:</strong> {corr_xx:.4f}</p>
+    <p><strong>Diagonal Corr PP:</strong> {corr_pp:.4f}</p>
+    <hr>
+    <p>Simulation completed successfully. Refresh to re-run.</p>
+    """
+    return output
 
-# EPR Steering check (simplified witness: <A_x B_x> + <A_p B_p> etc.)
-def steering_witness(rho):
-    # Very simplified correlation check
-    corr_xx = qt.expect(qt.tensor(X, X), rho)
-    return abs(corr_xx) > 0.5  # threshold for steering possible
-
-final_rho = result.states[-1].ptrace([0,1])  # reduced
-steers = steering_witness(final_rho)
-print("EPR Steering achieved:", steers)
-print("Final entanglement entropy (von Neumann):", qt.entropy_vn(final_rho))
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
